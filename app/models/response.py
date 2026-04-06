@@ -28,3 +28,6 @@ class HealthResponse(BaseModel):
     engine_version: str
     tables: list[str]
     contexts: list[str]
+    catalog_contexts: int = 0
+    registered_providers: int = 0
+    identity_maps: int = 0

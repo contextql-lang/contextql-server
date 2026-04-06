@@ -18,6 +18,7 @@ env/
 htmlcov/
 .coverage
 *.log
+*.db
 .idea/
 .vscode/
 *.swp
