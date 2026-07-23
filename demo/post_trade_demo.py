@@ -227,11 +227,23 @@ def run_demo(
         "has_actions": bool(
             evidence_df["recommended_action"].notna().any()
         ),
+        "requested_members": len(
+            service.last_case_request["filters"]["transaction_id"]
+        ),
+        "returned_ids_within_request": set(
+            int(value) for value in evidence_df["transaction_id"]
+        ).issubset(
+            set(service.last_case_request["filters"]["transaction_id"])
+        ),
     }
     _say(verbose, f"[8] evidence query: {results['evidence_query']}")
 
     # Scene 9 — prior snapshot remains queryable
-    v1 = store.members("deepsee_settlement_risk", version=1)
+    v1_result = engine.execute(
+        "SELECT transaction_id FROM transactions "
+        "WHERE CONTEXT IN (deepsee_settlement_risk AT VERSION 1);"
+    )
+    v1 = set(int(value) for value in v1_result.to_pandas()["transaction_id"])
     current = store.members("deepsee_settlement_risk")
     results["prior_snapshot"] = {
         "v1_members": len(v1),

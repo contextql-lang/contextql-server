@@ -114,8 +114,73 @@ class TestCatalogLifecycle:
         name = _unique_name("del")
         client.post("/contexts/", json={
             "name": name,
-            "definition_text": "SELECT 1 AS id",
-            "entity_key": "id",
+            "definition_text": "SELECT invoice_id FROM invoices",
+            "entity_key": "invoice_id",
         })
         resp = client.delete(f"/contexts/{name}")
         assert resp.status_code == 204
+
+
+class TestCatalogLanguageParity:
+    def test_rest_created_context_is_visible_to_language(self, client):
+        name = _unique_name("rest")
+        created = client.post(
+            "/contexts/",
+            json={
+                "name": name,
+                "definition_text": (
+                    "SELECT invoice_id FROM invoices "
+                    "WHERE status = 'open'"
+                ),
+                "entity_key": "invoice_id",
+            },
+        )
+        assert created.status_code == 201
+        shown = client.post("/query", json={"query": "SHOW CONTEXTS;"})
+        assert shown.status_code == 200
+        assert name in {row["name"] for row in shown.json()["rows"]}
+
+        queried = client.post(
+            "/query",
+            json={
+                "query": (
+                    "SELECT invoice_id FROM invoices "
+                    f"WHERE CONTEXT IN ({name});"
+                )
+            },
+        )
+        assert queried.status_code == 200
+
+    def test_language_created_context_is_visible_to_rest(self, client):
+        name = _unique_name("ddl")
+        created = client.post(
+            "/query",
+            json={
+                "query": (
+                    f"CREATE CONTEXT {name} ON invoice_id "
+                    "AS SELECT invoice_id FROM invoices;"
+                )
+            },
+        )
+        assert created.status_code == 200
+        fetched = client.get(f"/contexts/{name}")
+        assert fetched.status_code == 200
+        assert fetched.json()["name"] == name
+
+    def test_one_rest_update_creates_exactly_one_version(self, client):
+        name = _unique_name("version")
+        assert client.post(
+            "/contexts/",
+            json={
+                "name": name,
+                "definition_text": (
+                    "SELECT invoice_id FROM invoices"
+                ),
+                "entity_key": "invoice_id",
+            },
+        ).status_code == 201
+        assert client.put(
+            f"/contexts/{name}", json={"description": "v2"}
+        ).status_code == 200
+        versions = client.get(f"/contexts/{name}/versions").json()
+        assert [row["version"] for row in versions] == [1, 2]

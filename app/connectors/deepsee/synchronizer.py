@@ -86,13 +86,20 @@ class DeepSeeSynchronizer:
         context_id: str,
         *,
         now: Callable[[], datetime] | None = None,
+        state_repository=None,
     ) -> None:
         self._client = client
         self._store = membership_store
         self._context_id = context_id
         self._now = now if now is not None else _utc_now
-        self._committed_watermark: str | None = None
-        self._seen_event_ids: set[str] = set()
+        self._state_repository = state_repository
+        if state_repository is not None:
+            watermark, seen = state_repository.load(context_id)
+            self._committed_watermark = watermark
+            self._seen_event_ids = seen
+        else:
+            self._committed_watermark = None
+            self._seen_event_ids = set()
 
     @property
     def committed_watermark(self) -> str | None:
@@ -117,15 +124,36 @@ class DeepSeeSynchronizer:
             members, scores, data_as_of, watermark = \
                 self._collect_id_pages(first_page)
 
-        snapshot = self._store.put_snapshot(
-            self._context_id,
-            members,
-            computed_at=self._now(),
-            data_as_of=parse_iso(data_as_of),
-            source_watermark=watermark,
-            scores=scores,
+        staged = (
+            self._store.stage_snapshot(
+                self._context_id,
+                members,
+                computed_at=self._now(),
+                data_as_of=parse_iso(data_as_of),
+                source_watermark=watermark,
+                scores=scores,
+            )
+            if hasattr(self._store, "stage_snapshot") else None
         )
-        # Commit only after successful promotion.
+        snapshot = (
+            staged.snapshot
+            if staged is not None
+            else self._store.put_snapshot(
+                self._context_id,
+                members,
+                computed_at=self._now(),
+                data_as_of=parse_iso(data_as_of),
+                source_watermark=watermark,
+                scores=scores,
+            )
+        )
+        if self._state_repository is not None:
+            self._state_repository.commit(
+                self._context_id, watermark, {}
+            )
+        if staged is not None:
+            snapshot = self._store.commit_snapshot(staged)
+        # Commit only after successful snapshot and durable state.
         self._committed_watermark = watermark
         return snapshot
 
@@ -179,16 +207,38 @@ class DeepSeeSynchronizer:
         folded = _fold_events(ordered)
         new_watermark = ordered[-1].watermark
 
-        self._store.apply_delta(
-            self._context_id,
-            additions=sorted(folded.additions),
-            removals=sorted(folded.removals),
-            score_changes={**folded.additions, **folded.score_changes},
-            computed_at=self._now(),
-            data_as_of=parse_iso(data_as_of),
-            source_watermark=new_watermark,
+        delta_kwargs = {
+            "additions": sorted(folded.additions),
+            "removals": sorted(folded.removals),
+            "score_changes": {
+                **folded.additions, **folded.score_changes
+            },
+            "computed_at": self._now(),
+            "data_as_of": parse_iso(data_as_of),
+            "source_watermark": new_watermark,
+        }
+        staged = (
+            self._store.stage_delta(
+                self._context_id, **delta_kwargs
+            )
+            if hasattr(self._store, "stage_delta") else None
         )
-        # Commit watermark and idempotency keys only after promotion.
+        snapshot = (
+            staged.snapshot
+            if staged is not None
+            else self._store.apply_delta(
+                self._context_id, **delta_kwargs
+            )
+        )
+        if self._state_repository is not None:
+            self._state_repository.commit(
+                self._context_id,
+                new_watermark,
+                {event.event_id: event.watermark for event in ordered},
+            )
+        if staged is not None:
+            snapshot = self._store.commit_snapshot(staged)
+        # Commit in-memory state only after durable promotion/state.
         self._committed_watermark = new_watermark
         self._seen_event_ids.update(e.event_id for e in ordered)
         return SyncReport(

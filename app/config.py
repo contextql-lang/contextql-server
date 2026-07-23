@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     register_mock_providers: bool = True
     register_deepsee_mock: bool = False
     catalog_db: str = "cql_catalog.db"
+    refresh_scheduler_enabled: bool = True
+    refresh_scheduler_poll_seconds: float = 5.0
 
 
 settings = Settings()

@@ -14,16 +14,19 @@ class EngineManager:
         self._settings = settings
         self._engine: cql.Engine | None = None
 
-    def initialize(self) -> cql.Engine:
+    def initialize(self, *, catalog_repository=None) -> cql.Engine:
         if self._settings.use_demo:
             logger.info("Initializing demo engine")
-            self._engine = cql.demo()
+            self._engine = cql.demo(
+                catalog_repository=catalog_repository
+            )
         else:
             logger.info("Initializing bare engine (database=%s)", self._settings.database)
             self._engine = cql.Engine(
                 database=self._settings.database,
                 mcp_timeout_ms=self._settings.mcp_timeout_ms,
                 remote_timeout_ms=self._settings.remote_timeout_ms,
+                catalog_repository=catalog_repository,
             )
         return self._engine
 

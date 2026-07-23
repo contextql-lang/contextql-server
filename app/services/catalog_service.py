@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -17,6 +18,29 @@ class CatalogService:
         self.conn = conn
         self.engine = engine    # contextql Engine, optional
         self.audit = audit      # AuditService, optional
+        self.repository = None
+        if self.engine is not None:
+            from app.repositories import SQLiteContextRuntimeRepository
+            from contextql.catalog_repository import InMemoryCatalogRepository
+
+            if isinstance(
+                getattr(self.engine, "_catalog_repository", None),
+                InMemoryCatalogRepository,
+            ):
+                repository = SQLiteContextRuntimeRepository(conn)
+                self.engine._catalog_repository = repository
+                self.engine._executor.ddl.repository = repository
+            self.repository = self.engine._catalog_repository
+
+    def _qualified(self, name: str, namespace: str) -> str:
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        if not identifier.match(name) or not identifier.match(namespace):
+            raise ValueError("Context name and namespace must be identifiers")
+        return name if namespace == "default" else f"{namespace}.{name}"
+
+    @staticmethod
+    def _literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
 
     # ------------------------------------------------------------------
     # CRUD
@@ -34,24 +58,33 @@ class CatalogService:
         tags: list[str] | None = None,
         classification: str = "internal",
     ) -> dict:
-        """Insert a new context in *draft* state (version 1)."""
-        tags_json = json.dumps(tags) if tags is not None else None
-
-        cursor = self.conn.execute(
-            """
-            INSERT INTO contexts
-                (name, namespace, version, definition_text, entity_key,
-                 has_score, score_column, description, tags, classification,
-                 lifecycle_state)
-            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'draft')
-            """,
-            (
-                name, namespace, definition_text, entity_key,
-                int(has_score), score_column, description, tags_json,
-                classification,
-            ),
+        """Create through executable DDL, the sole catalog write path."""
+        if self.engine is None:
+            raise RuntimeError("Engine is required for context creation")
+        qualified = self._qualified(name, namespace)
+        score_clause = ""
+        if has_score:
+            if not score_column:
+                raise ValueError("score_column is required when has_score is true")
+            score_clause = f"\nSCORE {score_column}"
+        description_clause = (
+            f"\nDESCRIPTION {self._literal(description)}"
+            if description else ""
         )
-        self.conn.commit()
+        tags_clause = ""
+        if tags:
+            tags_clause = "\nTAGS (" + ", ".join(
+                self._literal(tag) for tag in tags
+            ) + ")"
+        ddl = (
+            f"CREATE CONTEXT {qualified} ON {entity_key}"
+            f"{score_clause}{description_clause}{tags_clause}\n"
+            f"AS {definition_text.rstrip(';')};"
+        )
+        self.engine.execute(ddl)
+        self.engine.execute(
+            f"ALTER CONTEXT {qualified} SET STATE 'draft';"
+        )
 
         self._audit_log("context.created", name, namespace, {"version": 1})
         return self.get(name, namespace)  # type: ignore[return-value]
@@ -62,7 +95,7 @@ class CatalogService:
         row = self.conn.execute(
             """
             SELECT * FROM contexts
-            WHERE name = ? AND namespace = ?
+            WHERE name = ? AND namespace = ? AND dropped_at IS NULL
             ORDER BY version DESC
             LIMIT 1
             """,
@@ -78,7 +111,7 @@ class CatalogService:
         offset: int = 0,
     ) -> tuple[list[dict], int]:
         """List contexts with optional filters. Returns (rows, total_count)."""
-        clauses: list[str] = []
+        clauses: list[str] = ["dropped_at IS NULL"]
         params: list[str | int] = []
 
         if namespace is not None:
@@ -105,53 +138,61 @@ class CatalogService:
 
         count_sql = f"SELECT COUNT(*) FROM ({base})"
         self.conn.row_factory = sqlite3.Row
-        total = self.conn.execute(count_sql, params * 2).fetchone()[0]
+        total = self.conn.execute(count_sql, params).fetchone()[0]
 
         data_sql = f"{base} ORDER BY c.name LIMIT ? OFFSET ?"
-        all_params = params * 2 + [limit, offset]
+        all_params = params + [limit, offset]
         rows = self.conn.execute(data_sql, all_params).fetchall()
 
         return [self._row_to_dict(r) for r in rows], total
 
     def update(self, name: str, namespace: str = "default", **kwargs) -> dict:
-        """Create a new version by copying the latest and overriding fields."""
+        """Apply updates through ContextQL ALTER statements."""
         current = self.get(name, namespace)
         if current is None:
             raise ValueError(f"Context '{name}' not found in namespace '{namespace}'")
 
-        new_version = current["version"] + 1
-
-        # Fields that may be overridden
-        updatable = (
-            "definition_text", "entity_key", "has_score", "score_column",
-            "description", "tags", "classification", "dependency_refs",
-            "provider_refs",
+        if self.engine is None:
+            raise RuntimeError("Engine is required for context updates")
+        qualified = self._qualified(name, namespace)
+        if "definition_text" in kwargs:
+            self.engine.execute(
+                f"ALTER CONTEXT {qualified} SET DEFINITION AS "
+                f"{kwargs['definition_text'].rstrip(';')};"
+            )
+        if "description" in kwargs:
+            self.engine.execute(
+                f"ALTER CONTEXT {qualified} SET DESCRIPTION "
+                f"{self._literal(kwargs['description'] or '')};"
+            )
+        if "tags" in kwargs:
+            values = ", ".join(
+                self._literal(tag) for tag in (kwargs["tags"] or [])
+            )
+            self.engine.execute(
+                f"ALTER CONTEXT {qualified} SET TAGS ({values});"
+            )
+        if "score_column" in kwargs:
+            if kwargs["score_column"]:
+                self.engine.execute(
+                    f"ALTER CONTEXT {qualified} SET SCORE "
+                    f"{kwargs['score_column']};"
+                )
+            else:
+                self.engine.execute(
+                    f"ALTER CONTEXT {qualified} DROP SCORE;"
+                )
+        self.engine.execute(
+            f"ALTER CONTEXT {qualified} SET STATE 'draft';"
         )
-        merged = {k: kwargs.get(k, current[k]) for k in updatable}
 
-        tags_json = json.dumps(merged["tags"]) if merged["tags"] is not None else None
-        dep_json = json.dumps(merged["dependency_refs"]) if merged["dependency_refs"] is not None else None
-        prov_json = json.dumps(merged["provider_refs"]) if merged["provider_refs"] is not None else None
-
-        self.conn.execute(
-            """
-            INSERT INTO contexts
-                (name, namespace, version, definition_text, entity_key,
-                 has_score, score_column, description, tags, classification,
-                 lifecycle_state, dependency_refs, provider_refs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
-            """,
-            (
-                name, namespace, new_version,
-                merged["definition_text"], merged["entity_key"],
-                int(merged["has_score"]), merged["score_column"],
-                merged["description"], tags_json, merged["classification"],
-                dep_json, prov_json,
-            ),
+        updated = self.get(name, namespace)
+        self._audit_log(
+            "context.updated",
+            name,
+            namespace,
+            {"version": updated["version"] if updated else None},
         )
-        self.conn.commit()
-
-        self._audit_log("context.updated", name, namespace, {"version": new_version})
         return self.get(name, namespace)  # type: ignore[return-value]
 
     def delete(self, name: str, namespace: str = "default") -> bool:
@@ -165,11 +206,11 @@ class CatalogService:
                 "only 'draft' contexts may be deleted"
             )
 
-        self.conn.execute(
-            "DELETE FROM contexts WHERE name = ? AND namespace = ?",
-            (name, namespace),
+        if self.engine is None:
+            raise RuntimeError("Engine is required for context deletion")
+        self.engine.execute(
+            f"DROP CONTEXT {self._qualified(name, namespace)};"
         )
-        self.conn.commit()
         self._audit_log("context.deleted", name, namespace)
         return True
 
@@ -183,25 +224,12 @@ class CatalogService:
         if current is None:
             raise ValueError(f"Context '{name}' not found in namespace '{namespace}'")
 
-        # Attempt validation via the engine's explain/parser if available
         if self.engine is not None:
-            try:
-                self.engine.explain(current["definition_text"])
-            except Exception as exc:
-                raise ValueError(f"Validation failed: {exc}") from exc
-
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            """
-            UPDATE contexts
-            SET lifecycle_state = 'validated',
-                last_validated_at = ?,
-                updated_at = ?
-            WHERE name = ? AND namespace = ? AND version = ?
-            """,
-            (now, now, name, namespace, current["version"]),
-        )
-        self.conn.commit()
+            qualified = self._qualified(name, namespace)
+            self.engine.execute(f"VALIDATE CONTEXT {qualified};")
+            self.engine.execute(
+                f"ALTER CONTEXT {qualified} SET STATE 'validated';"
+            )
 
         self._audit_log("context.validated", name, namespace, {"version": current["version"]})
         return self.get(name, namespace)  # type: ignore[return-value]
@@ -212,24 +240,10 @@ class CatalogService:
         if current is None:
             raise ValueError(f"Context '{name}' not found in namespace '{namespace}'")
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            """
-            UPDATE contexts
-            SET lifecycle_state = 'active', updated_at = ?
-            WHERE name = ? AND namespace = ? AND version = ?
-            """,
-            (now, name, namespace, current["version"]),
-        )
-        self.conn.commit()
-
         if self.engine is not None:
-            self.engine.register_context(
-                current["name"],
-                current["definition_text"],
-                entity_key=current["entity_key"],
-                has_score=bool(current["has_score"]),
-                score_column=current.get("score_column"),
+            self.engine.execute(
+                f"ALTER CONTEXT {self._qualified(name, namespace)} "
+                "SET STATE 'active';"
             )
 
         self._audit_log("context.activated", name, namespace, {"version": current["version"]})
@@ -241,16 +255,11 @@ class CatalogService:
         if current is None:
             raise ValueError(f"Context '{name}' not found in namespace '{namespace}'")
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            """
-            UPDATE contexts
-            SET lifecycle_state = 'retired', updated_at = ?
-            WHERE name = ? AND namespace = ? AND version = ?
-            """,
-            (now, name, namespace, current["version"]),
-        )
-        self.conn.commit()
+        if self.engine is not None:
+            self.engine.execute(
+                f"ALTER CONTEXT {self._qualified(name, namespace)} "
+                "SET STATE 'retired';"
+            )
 
         self._audit_log("context.retired", name, namespace, {"version": current["version"]})
         return self.get(name, namespace)  # type: ignore[return-value]
@@ -280,55 +289,100 @@ class CatalogService:
         if self.engine is None:
             raise RuntimeError("Engine is not available for preview")
 
-        result = self.engine.execute(current["definition_text"])
+        definition_sql = current.get("definition_sql")
+        if not definition_sql:
+            raise ValueError("Context has no executable SQL definition")
+        result = self.engine.execute(definition_sql)
         rows = result.to_pandas().head(limit).to_dict(orient="records")
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            """
-            UPDATE contexts SET last_executed_at = ?
-            WHERE name = ? AND namespace = ? AND version = ?
-            """,
-            (now, name, namespace, current["version"]),
-        )
-        self.conn.commit()
+        if self.repository is not None and hasattr(
+            self.repository, "record_execution"
+        ):
+            self.repository.record_execution(
+                current["context_id"],
+                current["version"],
+                datetime.now(timezone.utc),
+            )
 
         return rows
+
+    def refresh(self, name: str, namespace: str = "default") -> dict:
+        if self.engine is None:
+            raise RuntimeError("Engine is required for refresh")
+        self.engine.execute(
+            f"REFRESH CONTEXT {self._qualified(name, namespace)};"
+        )
+        return self.get(name, namespace)  # type: ignore[return-value]
+
+    def snapshots(
+        self,
+        name: str,
+        namespace: str = "default",
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        current = self.get(name, namespace)
+        if current is None:
+            raise ValueError(f"Context '{name}' not found")
+        rows = self.conn.execute(
+            """
+            SELECT context_id, version, storage_kind, member_count,
+                   serialized_bytes, computed_at, data_as_of, valid_from,
+                   valid_to, definition_hash, source_watermark, state,
+                   error_detail
+            FROM context_snapshots
+            WHERE context_id = ?
+            ORDER BY version DESC
+            LIMIT ? OFFSET ?
+            """,
+            (current["context_id"], limit, offset),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def history(
+        self,
+        name: str,
+        namespace: str = "default",
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        current = self.get(name, namespace)
+        if current is None:
+            raise ValueError(f"Context '{name}' not found")
+        clauses = ["context_id = ?"]
+        params: list = [current["context_id"]]
+        if start is not None:
+            clauses.append("effective_at >= ?")
+            params.append(start)
+        if end is not None:
+            clauses.append("effective_at <= ?")
+            params.append(end)
+        params.extend([limit, offset])
+        rows = self.conn.execute(
+            f"""
+            SELECT id, transaction_id, change_type, recorded_at,
+                   effective_at, context_version, source, evidence_ref,
+                   previous_score, new_score
+            FROM context_membership_history
+            WHERE {' AND '.join(clauses)}
+            ORDER BY effective_at, id
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Engine sync
     # ------------------------------------------------------------------
 
     def sync_active_to_engine(self) -> None:
-        """Load all active contexts and register them in the engine (startup)."""
-        if self.engine is None:
-            return
-
-        self.conn.row_factory = sqlite3.Row
-        rows = self.conn.execute(
-            """
-            SELECT c.* FROM contexts c
-            INNER JOIN (
-                SELECT name, namespace, MAX(version) AS max_ver
-                FROM contexts
-                WHERE lifecycle_state = 'active'
-                GROUP BY name, namespace
-            ) latest
-            ON c.name = latest.name
-               AND c.namespace = latest.namespace
-               AND c.version = latest.max_ver
-            """,
-        ).fetchall()
-
-        for row in rows:
-            ctx = self._row_to_dict(row)
-            self.engine.register_context(
-                ctx["name"],
-                ctx["definition_text"],
-                entity_key=ctx["entity_key"],
-                has_score=bool(ctx["has_score"]),
-                score_column=ctx.get("score_column"),
-            )
+        """Compatibility no-op: Engine hydration now owns startup loading."""
+        return None
 
     # ------------------------------------------------------------------
     # Helpers

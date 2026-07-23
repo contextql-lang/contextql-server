@@ -40,13 +40,19 @@ class ContextResponse(BaseModel):
     tags: list[str] | None = None
     classification: str | None = None
     lifecycle_state: str
-    dependency_refs: str | None = None
-    provider_refs: str | None = None
+    dependency_refs: list[str] | None = None
+    provider_refs: list[str] | None = None
     created_at: str
     updated_at: str
     last_validated_at: str | None = None
     last_executed_at: str | None = None
-    freshness_metadata: str | None = None
+    freshness_metadata: dict | None = None
+    context_id: str | None = None
+    definition_hash: str | None = None
+    materialization_json: str | None = None
+    current_snapshot_version: int | None = None
+    data_as_of: str | None = None
+    last_refresh_error: str | None = None
 
 
 class ContextListResponse(BaseModel):

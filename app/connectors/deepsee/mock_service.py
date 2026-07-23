@@ -115,6 +115,7 @@ class MockDeepSeeService:
         self._seq = 0
         self._failures: deque[str] = deque()
         self.call_count = 0
+        self.last_case_request: dict | None = None
 
     # ------------------------------------------------------------------
     # Behavior configuration
@@ -217,6 +218,12 @@ class MockDeepSeeService:
     ) -> CasesResponse:
         """Return evidence rows for one of the two supported resources."""
         self._enter_call(token)
+        self.last_case_request = {
+            "resource": resource,
+            "filters": dict(filters or {}),
+            "columns": list(columns or []),
+            "limit": limit,
+        }
         if resource not in VALID_RESOURCES:
             raise DeepSeeTerminalError(ErrorEnvelope(
                 code="UNKNOWN_RESOURCE",
@@ -231,7 +238,11 @@ class MockDeepSeeService:
             for entity_id, score in sorted(self._members.items())
         ]
         for key, value in (filters or {}).items():
-            rows = [row for row in rows if row.get(key) == value]
+            if isinstance(value, (list, tuple, set, frozenset)):
+                allowed = set(value)
+                rows = [row for row in rows if row.get(key) in allowed]
+            else:
+                rows = [row for row in rows if row.get(key) == value]
         if columns:
             rows = [{c: row.get(c) for c in columns} for row in rows]
         if limit is not None:

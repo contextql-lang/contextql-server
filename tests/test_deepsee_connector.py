@@ -352,11 +352,11 @@ class TestSynchronizerIncremental:
                 super().__init__()
                 self.fail_next_delta = False
 
-            def apply_delta(self, *args, **kwargs):
+            def stage_delta(self, *args, **kwargs):
                 if self.fail_next_delta:
                     self.fail_next_delta = False
                     raise RuntimeError("promotion failed")
-                return super().apply_delta(*args, **kwargs)
+                return super().stage_delta(*args, **kwargs)
 
         store = FailingOnceStore()
         sync, _ = make_synchronizer(make_client(service), store=store)

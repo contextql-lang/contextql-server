@@ -44,6 +44,8 @@ class TestCombinedDemonstration:
     def test_evidence_join_after_narrowing(self, results):
         assert results["evidence_query"]["rows"] == 10
         assert results["evidence_query"]["has_actions"] is True
+        assert results["evidence_query"]["requested_members"] == 502
+        assert results["evidence_query"]["returned_ids_within_request"] is True
 
     def test_prior_snapshot_queryable(self, results):
         prior = results["prior_snapshot"]

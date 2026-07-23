@@ -162,3 +162,61 @@ def preview_context(
         return {"rows": rows}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{name}/refresh", response_model=ContextResponse)
+def refresh_context(
+    name: str,
+    namespace: str = Query("default"),
+    catalog=Depends(get_catalog_service),
+):
+    try:
+        return catalog.refresh(name, namespace=namespace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{name}/snapshots")
+def list_snapshots(
+    name: str,
+    namespace: str = Query("default"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    catalog=Depends(get_catalog_service),
+):
+    try:
+        return {
+            "snapshots": catalog.snapshots(
+                name,
+                namespace=namespace,
+                limit=limit,
+                offset=offset,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/{name}/history")
+def list_history(
+    name: str,
+    namespace: str = Query("default"),
+    start: str | None = Query(None, alias="from"),
+    end: str | None = Query(None, alias="to"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    catalog=Depends(get_catalog_service),
+):
+    try:
+        return {
+            "history": catalog.history(
+                name,
+                namespace=namespace,
+                start=start,
+                end=end,
+                limit=limit,
+                offset=offset,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

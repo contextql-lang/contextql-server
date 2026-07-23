@@ -11,10 +11,12 @@ from app.core.engine import EngineManager
 from app.db.connection import init_db, close_db
 from app.dependencies import init_services, set_engine
 from app.providers.registry import register_deepsee_mock, register_defaults
+from app.repositories import SQLiteContextRuntimeRepository
 from app.services.audit_service import AuditService
 from app.services.catalog_service import CatalogService
 from app.services.identity_service import IdentityService
 from app.services.provider_service import ProviderService
+from app.services.refresh_scheduler import RefreshScheduler
 from app.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -25,9 +27,16 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     logger.info("Starting contextql-server")
 
+    # Initialize durable state before the engine so executable DDL and
+    # snapshots hydrate through the same repository used for writes.
+    conn = init_db(settings.catalog_db)
+    runtime_repository = SQLiteContextRuntimeRepository(conn)
+
     # Initialize engine
     manager = EngineManager(settings)
-    engine = manager.initialize()
+    engine = manager.initialize(
+        catalog_repository=runtime_repository
+    )
 
     if settings.register_mock_providers:
         register_defaults(engine)
@@ -35,21 +44,33 @@ async def lifespan(app: FastAPI):
     if settings.register_deepsee_mock:
         register_deepsee_mock(engine)
 
-    # Initialize database
-    conn = init_db(settings.catalog_db)
-
     # Initialize services
     audit = AuditService(conn)
+    engine.on_ddl_audit(
+        lambda event: audit.log(
+            event_type=f"context.ddl.{event['action']}",
+            resource_type="context",
+            resource_name=event.get("context"),
+            detail=event,
+        )
+    )
     catalog = CatalogService(conn, engine=engine, audit=audit)
     provider = ProviderService(conn, audit=audit)
     identity = IdentityService(conn, engine=engine, audit=audit)
 
-    # Sync persisted objects to engine
-    catalog.sync_active_to_engine()
+    # Contexts and snapshots were hydrated by Engine construction.
     identity.sync_to_engine()
 
     # Wire dependencies
     init_services(engine, catalog, provider, identity, audit)
+
+    scheduler = RefreshScheduler(
+        engine,
+        audit=audit,
+        poll_seconds=settings.refresh_scheduler_poll_seconds,
+    )
+    if settings.refresh_scheduler_enabled:
+        scheduler.start()
 
     logger.info(
         "Engine ready — tables=%s contexts=%s catalog_contexts=%d providers=%d identity_maps=%d",
@@ -64,6 +85,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if settings.refresh_scheduler_enabled:
+        scheduler.stop()
     audit.log("server_stop")
     close_db()
     logger.info("Shutting down contextql-server")
