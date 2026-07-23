@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     mcp_timeout_ms: int = 30000
     remote_timeout_ms: int = 30000
     register_mock_providers: bool = True
+    register_deepsee_mock: bool = False
+    catalog_db: str = "cql_catalog.db"
 
 
 settings = Settings()

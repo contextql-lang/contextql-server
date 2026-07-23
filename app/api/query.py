@@ -19,7 +19,7 @@ def query(
     service: QueryService = Depends(get_query_service),
 ) -> QueryResponse | JSONResponse:
     try:
-        return service.execute(request.query)
+        return service.execute_response(request.query)
     except ValueError as exc:
         logger.warning("Query validation error: %s", exc)
         return JSONResponse(
