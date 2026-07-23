@@ -10,7 +10,7 @@ from app.config import settings
 from app.core.engine import EngineManager
 from app.db.connection import init_db, close_db
 from app.dependencies import init_services, set_engine
-from app.providers.registry import register_defaults
+from app.providers.registry import register_deepsee_mock, register_defaults
 from app.services.audit_service import AuditService
 from app.services.catalog_service import CatalogService
 from app.services.identity_service import IdentityService
@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI):
 
     if settings.register_mock_providers:
         register_defaults(engine)
+
+    if settings.register_deepsee_mock:
+        register_deepsee_mock(engine)
 
     # Initialize database
     conn = init_db(settings.catalog_db)

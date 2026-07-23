@@ -24,3 +24,29 @@ def register_defaults(engine: cql.Engine) -> None:
 
     engine.register_remote_provider("static", StaticRemoteProvider())
     logger.info("Registered mock REMOTE provider: static")
+
+
+def register_deepsee_mock(engine: cql.Engine) -> None:
+    """Register the mock DeepSee connector providers (plan 8.4).
+
+    Guarded by the ``CQL_REGISTER_DEEPSEE_MOCK`` config flag (default off).
+    Provider names follow the planned registration: the MCP role serves
+    ``deepsee_settlement_risk`` membership; the REMOTE role serves the
+    ``settlement_cases`` and ``reconciliation_evidence`` resources.
+    """
+    from app.connectors.deepsee import (
+        DeepSeeClient,
+        DeepSeeMCPProvider,
+        DeepSeeRemoteProvider,
+        MockDeepSeeService,
+    )
+
+    service = MockDeepSeeService()
+    client = DeepSeeClient(service)
+    engine.register_mcp_provider(
+        "deepsee_settlement_risk", DeepSeeMCPProvider(client)
+    )
+    logger.info("Registered mock MCP provider: deepsee_settlement_risk")
+
+    engine.register_remote_provider("deepsee", DeepSeeRemoteProvider(client))
+    logger.info("Registered mock REMOTE provider: deepsee")
