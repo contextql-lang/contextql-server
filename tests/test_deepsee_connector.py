@@ -491,3 +491,39 @@ class TestRegistration:
 
     def test_flag_defaults_to_disabled(self):
         assert Settings().register_deepsee_mock is False
+
+
+class TestHardening:
+    """Security-review hardening: pagination caps and watermark parsing."""
+
+    def test_endless_cursor_chain_rejected(self, monkeypatch):
+        from app.connectors.deepsee import synchronizer as sync_mod
+        service = MockDeepSeeService(page_size=1)
+        client = make_client(service)
+        store = SetMembershipStore()
+        synchronizer = DeepSeeSynchronizer(client, store, "risk")
+
+        class EndlessPage:
+            def __getattr__(self, name):
+                if name == "next_cursor":
+                    return "again"
+                if name in ("entity_ids",):
+                    return [1]
+                if name in ("scores", "evidence_refs"):
+                    return {}
+                if name == "membership_bitmap":
+                    return None
+                return "0"
+
+        monkeypatch.setattr(
+            client, "fetch_snapshot", lambda cursor=None: EndlessPage()
+        )
+        monkeypatch.setattr(sync_mod, "MAX_PAGES", 5)
+        with pytest.raises(DeepSeeContractError, match="pagination"):
+            synchronizer.bootstrap()
+
+    def test_malformed_watermark_is_contract_error(self):
+        from app.connectors.deepsee.synchronizer import parse_watermark
+        with pytest.raises(DeepSeeContractError, match="watermark"):
+            parse_watermark("not-a-number")
+        assert parse_watermark("000000000004") == 4

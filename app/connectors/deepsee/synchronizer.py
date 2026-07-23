@@ -30,6 +30,25 @@ from app.connectors.deepsee.models import (
     contract_error,
 )
 
+#: Upper bound on pages followed per pagination loop — a misbehaving or
+#: compromised upstream returning endless cursors must not drive unbounded
+#: memory growth or an infinite request loop.
+MAX_PAGES = 10_000
+
+
+def parse_watermark(value: str | None) -> int:
+    """Parse a wire watermark/cursor as an integer ordering value.
+
+    Malformed values are a wire-contract violation, reported through the
+    connector's typed error rather than a bare ``ValueError``.
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise contract_error(
+            f"Malformed watermark {value!r}; expected an integer string."
+        ) from None
+
 
 @dataclass(frozen=True)
 class SyncReport:
@@ -118,13 +137,20 @@ class DeepSeeSynchronizer:
         data_as_of = first_page.data_as_of
         watermark = first_page.watermark
         cursor = first_page.next_cursor
+        pages = 1
         while cursor is not None:
+            if pages >= MAX_PAGES:
+                raise contract_error(
+                    f"Snapshot pagination exceeded {MAX_PAGES} pages; "
+                    "refusing unbounded cursor chain."
+                )
             page = self._client.fetch_snapshot(cursor=cursor)
             members.extend(page.entity_ids or ())
             scores.update(page.scores)
             data_as_of = page.data_as_of
             watermark = page.watermark
             cursor = page.next_cursor
+            pages += 1
         return members, scores, data_as_of, watermark
 
     # ------------------------------------------------------------------
@@ -149,7 +175,7 @@ class DeepSeeSynchronizer:
                 committed_watermark=self._committed_watermark,
             )
 
-        ordered = sorted(applicable, key=lambda e: int(e.watermark))
+        ordered = sorted(applicable, key=lambda e: parse_watermark(e.watermark))
         folded = _fold_events(ordered)
         new_watermark = ordered[-1].watermark
 
@@ -178,7 +204,13 @@ class DeepSeeSynchronizer:
         assert self._committed_watermark is not None
         events: list[ChangeEvent] = []
         cursor: str | None = None
+        pages = 0
         while True:
+            if pages >= MAX_PAGES:
+                raise contract_error(
+                    f"Change-feed pagination exceeded {MAX_PAGES} pages; "
+                    "refusing unbounded cursor chain."
+                )
             batch = self._client.fetch_changes(
                 self._committed_watermark, cursor=cursor
             )
@@ -186,11 +218,12 @@ class DeepSeeSynchronizer:
             if batch.next_cursor is None:
                 return events, batch.data_as_of
             cursor = batch.next_cursor
+            pages += 1
 
     def _filter_events(
         self, events: list[ChangeEvent]
     ) -> tuple[list[ChangeEvent], int, int]:
-        boundary = int(self._committed_watermark or "0")
+        boundary = parse_watermark(self._committed_watermark or "0")
         applicable: list[ChangeEvent] = []
         batch_event_ids: set[str] = set()
         duplicates = 0
@@ -199,7 +232,7 @@ class DeepSeeSynchronizer:
             if event.event_id in self._seen_event_ids or \
                     event.event_id in batch_event_ids:
                 duplicates += 1
-            elif int(event.watermark) <= boundary:
+            elif parse_watermark(event.watermark) <= boundary:
                 out_of_order += 1
             else:
                 batch_event_ids.add(event.event_id)

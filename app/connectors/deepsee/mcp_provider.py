@@ -15,9 +15,13 @@ from app.connectors.deepsee.models import (
     SUPPORTED_BITMAP_ENCODING,
     SUPPORTED_ENTITY_KEY_TYPE,
     SnapshotPage,
+    contract_error,
 )
 
 DEFAULT_BITMAP_THRESHOLD = 1000
+
+#: Upper bound on pages followed per pagination loop (see synchronizer).
+MAX_PAGES = 10_000
 
 
 class DeepSeeMCPProvider:
@@ -75,7 +79,13 @@ class DeepSeeMCPProvider:
         data_as_of = first_page.data_as_of
         watermark = first_page.watermark
         cursor = first_page.next_cursor
+        pages = 1
         while cursor is not None:
+            if pages >= MAX_PAGES:
+                raise contract_error(
+                    f"Snapshot pagination exceeded {MAX_PAGES} pages; "
+                    "refusing unbounded cursor chain."
+                )
             page = self._client.fetch_snapshot(cursor=cursor)
             entity_ids.extend(page.entity_ids or ())
             scores.update(page.scores)
@@ -83,6 +93,7 @@ class DeepSeeMCPProvider:
             data_as_of = page.data_as_of
             watermark = page.watermark
             cursor = page.next_cursor
+            pages += 1
 
         if limit is not None and len(entity_ids) > limit:
             entity_ids = sorted(
