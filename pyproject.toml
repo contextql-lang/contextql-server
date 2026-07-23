@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "FastAPI HTTP service layer for the ContextQL engine"
 requires-python = ">=3.10"
 dependencies = [
+    "contextql[executor]>=0.2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.0",

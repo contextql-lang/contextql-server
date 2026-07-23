@@ -24,8 +24,13 @@ The server currently provides:
 
 ## Quick Start
 
+The server depends on the `contextql` engine package. Until it is published to
+PyPI, install it first from a sibling checkout of
+[contextql-lang/contextql](https://github.com/contextql-lang/contextql):
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
+pip install -e "../contextql[executor]"   # engine (sibling checkout)
 pip install -e ".[dev]"
 
 # Run tests
