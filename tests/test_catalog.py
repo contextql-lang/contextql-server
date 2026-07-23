@@ -145,7 +145,7 @@ class TestCatalogLanguageParity:
             json={
                 "query": (
                     "SELECT invoice_id FROM invoices "
-                    f"WHERE CONTEXT IN ({name});"
+                    f"WHERE CONTEXT IN ({name}) LIMIT 100;"
                 )
             },
         )

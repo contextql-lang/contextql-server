@@ -373,3 +373,83 @@ def test_synchronizer_watermark_and_idempotency_survive_restart():
     report = restarted.sync_once()
     assert report.applied_total == 0
     assert store.members("deepsee-risk") == {1, 2}
+
+
+def test_snapshot_failure_never_advances_durable_sync_state():
+    class FailingPublicationStore(SetMembershipStore):
+        fail_publication = False
+
+        def commit_snapshot(self, staged):
+            if self.fail_publication:
+                self.fail_publication = False
+                raise RuntimeError("forced publication failure")
+            return super().commit_snapshot(staged)
+
+    conn = _migrated_connection()
+    state = SQLiteSynchronizerStateRepository(conn)
+    service = MockDeepSeeService(members={1: 0.5})
+    store = FailingPublicationStore()
+    sync = DeepSeeSynchronizer(
+        DeepSeeClient(service), store, "deepsee-risk",
+        state_repository=state,
+    )
+    sync.bootstrap()
+    old_watermark = sync.committed_watermark
+    event = service.add_member(2, 0.8)
+    store.fail_publication = True
+
+    with pytest.raises(RuntimeError, match="publication"):
+        sync.sync_once()
+
+    durable_watermark, seen = state.load("deepsee-risk")
+    assert durable_watermark == old_watermark
+    assert event.event_id not in seen
+    assert store.members("deepsee-risk") == {1}
+
+    restarted = DeepSeeSynchronizer(
+        DeepSeeClient(service), store, "deepsee-risk",
+        state_repository=state,
+    )
+    report = restarted.sync_once()
+    assert report.applied_additions == 1
+    assert store.members("deepsee-risk") == {1, 2}
+
+
+def test_state_failure_after_publication_replays_idempotently():
+    class FailingStateRepository(SQLiteSynchronizerStateRepository):
+        fail_next = False
+
+        def commit(self, context_id, watermark, event_watermarks):
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("forced state failure")
+            return super().commit(context_id, watermark, event_watermarks)
+
+    conn = _migrated_connection()
+    state = FailingStateRepository(conn)
+    service = MockDeepSeeService(members={1: 0.5})
+    store = SetMembershipStore()
+    sync = DeepSeeSynchronizer(
+        DeepSeeClient(service), store, "deepsee-risk",
+        state_repository=state,
+    )
+    sync.bootstrap()
+    old_watermark = sync.committed_watermark
+    event = service.add_member(2, 0.8)
+    state.fail_next = True
+
+    with pytest.raises(RuntimeError, match="state failure"):
+        sync.sync_once()
+
+    durable_watermark, seen = state.load("deepsee-risk")
+    assert durable_watermark == old_watermark
+    assert event.event_id not in seen
+    assert store.members("deepsee-risk") == {1, 2}
+
+    restarted = DeepSeeSynchronizer(
+        DeepSeeClient(service), store, "deepsee-risk",
+        state_repository=state,
+    )
+    restarted.sync_once()
+    assert store.members("deepsee-risk") == {1, 2}
+    assert state.load("deepsee-risk")[0] == event.watermark

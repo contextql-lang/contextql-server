@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextql as cql
 
+from app.config import settings
 from app.services.audit_service import AuditService
 from app.services.catalog_service import CatalogService
 from app.services.identity_service import IdentityService
@@ -26,7 +27,11 @@ def init_services(
     global _engine, _query_service
     global _catalog_service, _provider_service, _identity_service, _audit_service
     _engine = engine
-    _query_service = QueryService(engine)
+    _query_service = QueryService(
+        engine,
+        max_result_rows=settings.max_query_rows,
+        max_response_bytes=settings.max_query_response_bytes,
+    )
     _catalog_service = catalog
     _provider_service = provider
     _identity_service = identity
@@ -37,7 +42,11 @@ def set_engine(engine: cql.Engine) -> None:
     """Backward-compatible setter for engine + query service only."""
     global _engine, _query_service
     _engine = engine
-    _query_service = QueryService(engine)
+    _query_service = QueryService(
+        engine,
+        max_result_rows=settings.max_query_rows,
+        max_response_bytes=settings.max_query_response_bytes,
+    )
 
 
 def get_engine() -> cql.Engine:

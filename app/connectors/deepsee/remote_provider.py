@@ -39,15 +39,15 @@ class DeepSeeRemoteProvider:
                 f"{sorted(self.RESOURCES)}."
             )
         bounded_filters = dict(filters) if filters else {}
-        requested_ids: set[int] | None = None
+        requested_ids = None
         if entity_filter is not None:
-            requested_ids = {int(value) for value in entity_filter.ids()}
-            bounded_filters[entity_filter.column] = tuple(requested_ids)
+            requested_ids = entity_filter.ids()
         response = self._client.fetch_cases(
             resource,
             filters=bounded_filters or None,
             columns=list(columns) if columns else None,
             limit=limit,
+            entity_filter=entity_filter,
         )
         rows = [dict(row) for row in response.rows]
         if requested_ids is not None:

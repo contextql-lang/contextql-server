@@ -222,19 +222,17 @@ def run_demo(
     engine.register_remote_provider("deepsee", DeepSeeRemoteProvider(client))
     evidence = engine.execute(EVIDENCE_QUERY)
     evidence_df = evidence.to_pandas()
+    requested_filter = service.last_case_request["entity_filter"]
+    requested_members = requested_filter.ids()
     results["evidence_query"] = {
         "rows": len(evidence_df),
         "has_actions": bool(
             evidence_df["recommended_action"].notna().any()
         ),
-        "requested_members": len(
-            service.last_case_request["filters"]["transaction_id"]
-        ),
+        "requested_members": requested_filter.cardinality,
         "returned_ids_within_request": set(
             int(value) for value in evidence_df["transaction_id"]
-        ).issubset(
-            set(service.last_case_request["filters"]["transaction_id"])
-        ),
+        ).issubset(requested_members),
     }
     _say(verbose, f"[8] evidence query: {results['evidence_query']}")
 

@@ -18,7 +18,10 @@ class EngineManager:
         if self._settings.use_demo:
             logger.info("Initializing demo engine")
             self._engine = cql.demo(
-                catalog_repository=catalog_repository
+                catalog_repository=catalog_repository,
+                max_intermediate_rows=(
+                    self._settings.max_query_intermediate_rows
+                ),
             )
         else:
             logger.info("Initializing bare engine (database=%s)", self._settings.database)
@@ -27,6 +30,9 @@ class EngineManager:
                 mcp_timeout_ms=self._settings.mcp_timeout_ms,
                 remote_timeout_ms=self._settings.remote_timeout_ms,
                 catalog_repository=catalog_repository,
+                max_intermediate_rows=(
+                    self._settings.max_query_intermediate_rows
+                ),
             )
         return self._engine
 

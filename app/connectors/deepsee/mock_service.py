@@ -13,6 +13,8 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+from contextql.providers import EntityFilter
+
 from app.connectors.deepsee.models import (
     CHANGE_TYPE_ADDED,
     CHANGE_TYPE_REMOVED,
@@ -215,6 +217,7 @@ class MockDeepSeeService:
         columns: list[str] | None = None,
         limit: int | None = None,
         token: str | None = None,
+        entity_filter: EntityFilter | None = None,
     ) -> CasesResponse:
         """Return evidence rows for one of the two supported resources."""
         self._enter_call(token)
@@ -223,6 +226,15 @@ class MockDeepSeeService:
             "filters": dict(filters or {}),
             "columns": list(columns or []),
             "limit": limit,
+            "entity_filter_encoding": (
+                entity_filter.bitmap_encoding
+                if entity_filter is not None else None
+            ),
+            "entity_filter_cardinality": (
+                entity_filter.cardinality
+                if entity_filter is not None else None
+            ),
+            "entity_filter": entity_filter,
         }
         if resource not in VALID_RESOURCES:
             raise DeepSeeTerminalError(ErrorEnvelope(
@@ -233,9 +245,13 @@ class MockDeepSeeService:
                 ),
                 retryable=False,
             ))
+        requested_members = (
+            entity_filter.ids() if entity_filter is not None else None
+        )
         rows = [
             _case_row(resource, entity_id, score)
             for entity_id, score in sorted(self._members.items())
+            if requested_members is None or entity_id in requested_members
         ]
         for key, value in (filters or {}).items():
             if isinstance(value, (list, tuple, set, frozenset)):

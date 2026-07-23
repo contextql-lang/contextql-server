@@ -147,13 +147,14 @@ class DeepSeeSynchronizer:
                 scores=scores,
             )
         )
+        if staged is not None:
+            snapshot = self._store.commit_snapshot(staged)
         if self._state_repository is not None:
             self._state_repository.commit(
                 self._context_id, watermark, {}
             )
-        if staged is not None:
-            snapshot = self._store.commit_snapshot(staged)
-        # Commit only after successful snapshot and durable state.
+        # State never gets ahead of snapshot publication. If the durable state
+        # commit fails, bootstrap can be repeated safely.
         self._committed_watermark = watermark
         return snapshot
 
@@ -230,15 +231,16 @@ class DeepSeeSynchronizer:
                 self._context_id, **delta_kwargs
             )
         )
+        if staged is not None:
+            snapshot = self._store.commit_snapshot(staged)
         if self._state_repository is not None:
             self._state_repository.commit(
                 self._context_id,
                 new_watermark,
                 {event.event_id: event.watermark for event in ordered},
             )
-        if staged is not None:
-            snapshot = self._store.commit_snapshot(staged)
-        # Commit in-memory state only after durable promotion/state.
+        # Snapshot-first ordering provides at-least-once recovery when the
+        # membership store and durable state do not share one transaction.
         self._committed_watermark = new_watermark
         self._seen_event_ids.update(e.event_id for e in ordered)
         return SyncReport(

@@ -7,7 +7,7 @@ import pytest
 
 import contextql as cql
 from contextql.membership import SetMembershipStore
-from contextql.providers import MCPProvider, RemoteProvider
+from contextql.providers import EntityFilter, MCPProvider, RemoteProvider
 
 from app.config import Settings
 from app.connectors.deepsee import (
@@ -475,6 +475,35 @@ class TestRemoteProvider:
         assert all(set(row) == {"transaction_id", "case_status"}
                    for row in result.rows)
         assert all(row["case_status"] == "open" for row in result.rows)
+
+    def test_large_entity_filter_stays_roaring_through_transport(self):
+        from pyroaring import BitMap64
+
+        service = MockDeepSeeService(
+            members={value: 0.5 for value in range(12_000)}
+        )
+        provider = DeepSeeRemoteProvider(make_client(service))
+        requested = BitMap64(range(10_001))
+        result = provider.query(
+            "settlement_cases",
+            {},
+            ["transaction_id"],
+            entity_filter=EntityFilter(
+                column="transaction_id",
+                membership_bitmap=requested.serialize(),
+                bitmap_encoding="roaring64",
+            ),
+        )
+        assert len(result.rows) == 10_001
+        assert (
+            service.last_case_request["entity_filter_encoding"]
+            == "roaring64"
+        )
+        assert (
+            service.last_case_request["entity_filter_cardinality"]
+            == 10_001
+        )
+        assert "transaction_id" not in service.last_case_request["filters"]
 
     def test_unknown_resource_rejected(self):
         provider = DeepSeeRemoteProvider(make_client(MockDeepSeeService()))

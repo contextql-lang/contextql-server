@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable, TypeVar
 
+from contextql.providers import EntityFilter
+
 from contextql.providers.base import MAX_BITMAP_PAYLOAD_BYTES
 
 from app.connectors.deepsee.auth import resolve_credential
@@ -119,14 +121,20 @@ class DeepSeeClient:
         filters: dict | None = None,
         columns: list[str] | None = None,
         limit: int | None = None,
+        entity_filter: EntityFilter | None = None,
     ) -> CasesResponse:
         """Fetch evidence rows for a REMOTE resource."""
         token = self._token()
+        call_kwargs = {
+            "filters": filters,
+            "columns": columns,
+            "limit": limit,
+            "token": token,
+        }
+        if entity_filter is not None:
+            call_kwargs["entity_filter"] = entity_filter
         response = self._call_with_retry(
-            lambda: self._service.cases(
-                resource, filters=filters, columns=columns,
-                limit=limit, token=token,
-            )
+            lambda: self._service.cases(resource, **call_kwargs)
         )
         self._validate_freshness(response.data_as_of)
         return response

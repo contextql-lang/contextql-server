@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     catalog_db: str = "cql_catalog.db"
     refresh_scheduler_enabled: bool = True
     refresh_scheduler_poll_seconds: float = 5.0
+    max_query_rows: int = 10_000
+    max_query_intermediate_rows: int = 100_000
+    max_query_response_bytes: int = 10 * 1024 * 1024
 
 
 settings = Settings()

@@ -59,6 +59,14 @@ All settings use the `CQL_` environment variable prefix:
 | `CQL_MCP_TIMEOUT_MS` | `30000` | MCP provider timeout |
 | `CQL_REMOTE_TIMEOUT_MS` | `30000` | REMOTE provider timeout |
 | `CQL_REGISTER_MOCK_PROVIDERS` | `True` | Register echo/static mock providers |
+| `CQL_MAX_QUERY_ROWS` | `10000` | Maximum `LIMIT` accepted for a SELECT |
+| `CQL_MAX_QUERY_INTERMEDIATE_ROWS` | `100000` | Pre-materialization engine row ceiling |
+| `CQL_MAX_QUERY_RESPONSE_BYTES` | `10485760` | Maximum encoded response size |
+
+Every `SELECT` submitted to `POST /query` must include an explicit `LIMIT`.
+DDL and catalog statements are not subject to this requirement. Queries are
+rejected before DataFrame allocation when their intermediate relation exceeds
+the configured ceiling, and oversized encoded responses fail with E306.
 
 ## Architecture
 

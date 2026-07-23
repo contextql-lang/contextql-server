@@ -29,3 +29,20 @@ def test_execute_context_query(query_service):
 def test_execute_invalid_query_raises(query_service):
     with pytest.raises(Exception):
         query_service.execute("TOTALLY INVALID GARBAGE;")
+
+
+def test_select_requires_explicit_limit(query_service):
+    with pytest.raises(ValueError, match="E305"):
+        query_service.execute("SELECT invoice_id FROM invoices;")
+
+
+def test_select_rejects_excessive_limit(engine):
+    service = QueryService(engine, max_result_rows=2)
+    with pytest.raises(ValueError, match="E305"):
+        service.execute("SELECT invoice_id FROM invoices LIMIT 3;")
+
+
+def test_response_byte_limit_is_enforced(engine):
+    service = QueryService(engine, max_response_bytes=8)
+    with pytest.raises(ValueError, match="E306"):
+        service.execute("SELECT invoice_id FROM invoices LIMIT 1;")
